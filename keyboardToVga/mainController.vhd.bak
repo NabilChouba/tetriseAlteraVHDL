@@ -1,0 +1,981 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.STD_LOGIC_ARITH.ALL;
+use IEEE.STD_LOGIC_UNSIGNED.ALL;
+
+
+
+entity mainController is
+port(clk_50mhz : in  std_logic; -- system clock signal 
+	 clk_25mhz_out : out  std_logic; -- vga clock signal to the DAC 
+      rst       : in  std_logic; -- system reset 
+	  kbdata    : in  STD_LOGIC; -- input keyboard data 
+	  kbclk     : in  STD_LOGIC; -- input keyboard clock 
+	  blank_out : out std_logic; -- vga control signal
+	  csync_out : out std_logic; -- vga control signal
+     red_out   : out std_logic_vector(9 downto 0); -- vga red pixel value
+	  green_out : out std_logic_vector(9 downto 0); -- vga green pixel value
+	  blue_out  : out std_logic_vector(9 downto 0); -- vga blue pixel value
+		  horiz_sync_out: out std_logic; -- vga control signal
+	  vert_sync_out : out std_logic);-- vga control signal
+	  
+end mainController;
+
+architecture RTL of mainController is
+component vga_controller 
+  Port ( clk       : in  std_logic;  -- 50 MHz clock
+         reset     : in  std_logic;  -- reset signal
+         hs        : out std_logic;  -- Horizontal sync pulse.  Active low
+         vs        : out std_logic;  -- Vertical sync pulse.  Active low
+         pixel_clk : out std_logic;  -- 25 MHz pixel clock
+         blank     : out std_logic;  -- Blanking interval indicator.  Active low.
+         sync      : out std_logic;  -- Composite Sync signal.  Active low.  We don't use it in this lab,
+                                     --   but the video DAC on the DE2 board requires an input for it.
+         DrawX     : out std_logic_vector(9 downto 0);   -- horizontal coordinate
+         DrawY     : out std_logic_vector(9 downto 0) ); -- vertical coordinate
+end component;
+
+
+component keyPS2controller 
+    Port ( clk : in  STD_LOGIC;
+           rst : in  STD_LOGIC;
+			  ack : in  STD_LOGIC;
+           kbdata : in  STD_LOGIC;
+           kbclk : in  STD_LOGIC;
+			  data_ready : out  STD_LOGIC;
+			  kbdatarx : out  STD_LOGIC_VECTOR (7 downto 0)
+  );
+end component;
+
+component font_rom 
+   port(
+      clk: in std_logic;
+      addr: in std_logic_vector(10 downto 0);
+      data: out std_logic_vector(7 downto 0)
+   );
+end component;
+
+
+COMPONENT binaryToDeccimal 
+   port(
+      clk: in std_logic;
+      rst: in std_logic;
+      go: in std_logic;
+      binary: in std_logic_vector(12 downto 0);
+      decimal: out std_logic_vector(11 downto 0)
+   );
+end COMPONENT ;
+
+
+ -- pixel signal
+ signal video_on : std_logic;
+ signal valid_screen : std_logic;
+ signal pixel : std_logic;
+ 
+ -- pixel position
+ signal pixel_row : std_logic_vector(9 downto 0);
+ signal pixel_column : std_logic_vector(9 downto 0);
+ 
+ -- rom signal 
+ signal rom_addr:  std_logic_vector(10 downto 0);
+ signal rom_addr_dy:  std_logic_vector(7 downto 0);
+ signal rom_data:  std_logic_vector(7 downto 0);
+
+signal rom_addrkey:  std_logic_vector(10 downto 0);
+ signal rom_addr_dy_key:  std_logic_vector(7 downto 0);
+ signal rom_datakey:  std_logic_vector(7 downto 0);
+signal rom_addr_key:  std_logic_vector(10 downto 0);
+ signal rom_data_key:  std_logic_vector(7 downto 0);
+	
+ -- keyboard signal
+ signal kb_ack : STD_LOGIC;
+ signal kb_data_ready : STD_LOGIC;
+ signal kb_kbdatarx : STD_LOGIC_VECTOR (7 downto 0);
+ signal ky_char : STD_LOGIC_VECTOR (7 downto 0);
+ signal ky_back_space : STD_LOGIC;
+ 
+ -- ram signal
+ signal ram_we1 : STD_LOGIC;
+ signal ram_q2 : STD_LOGIC_VECTOR (7 downto 0);
+ signal ram_addr2 : STD_LOGIC_VECTOR (11 downto 0);
+ 
+ -- counter signal
+ signal counter_dec : STD_LOGIC;
+ signal counter_inc : STD_LOGIC;
+ signal counter_rst : STD_LOGIC;
+ signal counter_value : unsigned (11 downto 0);		  
+
+ -- clock devider signal
+ signal clk_25mhz,clk_reg,clk_next : STD_LOGIC;
+ signal rstn : STD_LOGIC;
+ 
+type mem_32x16type is array (31 downto 0) of  STD_LOGIC_VECTOR (15 downto 0); 
+type mem_3X3type is array (2 downto 0) of  STD_LOGIC_VECTOR (2 downto 0); 
+
+signal matrix_reg,matrix_next : mem_32x16type;
+signal matrix_GAME_OVER,matrix_START : mem_32x16type;
+
+
+signal matrix_display_reg,matrix_display_next : mem_32x16type;
+
+signal matrix_added : mem_32x16type;
+
+signal object_reg,object_next : mem_3x3type;
+signal object_rotated : mem_3x3type;
+signal object_randum : mem_3x3type;
+
+signal randum_sel,randum_sel_next  : STD_LOGIC_VECTOR (2 downto 0); 
+signal LFSR        : STD_LOGIC_VECTOR (3 downto 0);
+
+signal coln_reg : unsigned (3 downto 0):="0010" ;
+
+signal position_y_reg,oposition_y_next : unsigned (3 downto 0):="0010" ;
+
+signal line_reg : unsigned (4 downto 0):="00100" ;
+signal position_x_reg,oposition_x_next : unsigned (4 downto 0):="00100" ;
+
+signal run_line : STD_LOGIC;
+signal run_coln : STD_LOGIC;
+signal collision_next,collision_reg: STD_LOGIC; 
+signal collision_ack : STD_LOGIC;
+
+signal line_remove_reg : STD_LOGIC_VECTOR (31 downto 0);
+signal count_1hz_reg : unsigned (26 downto 0);
+
+signal count_score_reg : unsigned (7 downto 0);
+
+ 
+
+signal clk,pixel2 , pixel1 : STD_LOGIC;
+signal obj_rotate : STD_LOGIC := '0';
+
+
+signal obj_move_left : STD_LOGIC;
+signal obj_move_right : STD_LOGIC;
+signal clk_1hz : STD_LOGIC;
+
+
+signal ctr_matrix_add : STD_LOGIC;
+
+
+
+signal StepAddMAtrix,StepAddObject : STD_LOGIC;
+
+   type state_type is (idle,idleClear,GameOverFin,StartGameDebut,DectectRemoveFullLine,RemoveFullLine,WaitNextFrameNew,AddMatrix,BeginAddObject,EndAddObject,DetectCollusion,CollusionDetected,WaitNextFrame);
+  -- FSM registers
+  signal state_reg : state_type;
+  signal state_next: state_type;
+
+  signal fsm_StepAddObject,fsm_AddMAtrix,fsm_AddObject_Run,fsm_AddObject_Ack : STD_LOGIC;
+  signal fsm_DetectCollusion,fsm_DetectCollusion_ack,fsm_NewObject : STD_LOGIC;
+  signal fsm_CleanLR,fsm_NeedRemoveLine,fsm_removeLine,fsm_matrix_add : STD_LOGIC;
+  signal fsm_CleanMatrix,fsm_GameStart,fsm_GameOver,fsm_inc_score,fsm_score_clean : STD_LOGIC;
+  
+
+  signal loadRemoveMod,loadRemove : STD_LOGIC_VECTOR (31 downto 0); 
+  
+  signal collisionL_next,collisionL_reg: STD_LOGIC; 
+  signal collisionR_next,collisionR_reg: STD_LOGIC; 
+  
+
+  signal go,go_reg,go_next: std_logic;
+  signal binary_level,binary_score : std_logic_vector(12 downto 0);
+  signal decimal_level,decimal_score: std_logic_vector(11 downto 0);
+  
+  type mem_15X8type is array (15 downto 0) of  std_logic_vector(7 downto 0);
+  signal PressKey_coded,score_coded,level_coded,preview_coded : mem_15X8type;
+  
+ signal pixel_txt,pixel_txt_key: STD_LOGIC; 
+ 
+ signal clk_1d2hz,kb_data_ready_reg ,kb_data_ready_next,pixel_border: STD_LOGIC; 
+
+
+begin
+
+  go <= '1' when go_reg = '0' and go_next ='1' else
+        '0';
+  go_next <= fsm_inc_score or fsm_score_clean or clk_1hz;
+
+   u_binaryToDeccimal_score: binaryToDeccimal
+   PORT MAP(clk => clk,
+            rst => rstn,
+				go => go,
+            binary => binary_score,
+            decimal =>decimal_score
+				);
+  binary_score <= "00000" & std_logic_vector(count_score_reg);
+  
+   u_binaryToDeccimal_level: binaryToDeccimal
+   PORT MAP(clk => clk,
+            rst => rstn,
+				go => go,
+            binary => binary_level,
+            decimal =>decimal_level
+				);
+  binary_level <= "00000000" & std_logic_vector(count_score_reg(7 downto 3));
+
+
+
+ score_coded (0)<= x"53"; --S
+ score_coded (1)<= x"43"; --C
+ score_coded (2)<= x"4f"; --0
+ score_coded (3)<= x"52"; --R
+ score_coded (4)<= x"45"; --E
+ score_coded (5)<= x"3a"; --:
+ score_coded (6)<= "0011" & decimal_score(11 downto 8);-- x3(Number)
+ score_coded (7)<= "0011" & decimal_score(7  downto 4);-- x3(Number)
+ score_coded (8)<= "0011" & decimal_score(3  downto 0);-- x3(Number)
+ score_coded (9)<= x"00"; --
+ score_coded (10)<= x"00"; --
+ score_coded (11)<= x"00"; --
+ score_coded (12)<= x"00"; --
+ score_coded (14)<= x"00"; --
+ score_coded (15)<= x"00"; --
+ 
+ 
+ 
+
+ level_coded (0)<= x"4c"; --L
+ level_coded (1)<= x"45"; --E
+ level_coded (2)<= x"56"; --V
+ level_coded (3)<= x"45"; --E
+ level_coded (4)<= x"4c"; --L
+ level_coded (5)<= x"3a"; --:
+ level_coded (6)<= "0011" & decimal_level(11 downto 8);-- x3(Number)
+ level_coded (7)<= "0011" & decimal_level(7  downto 4);-- x3(Number)
+ level_coded (8)<= "0011" & decimal_level(3  downto 0);-- x3(Number)
+ level_coded (9)<= x"00"; --
+ level_coded (10)<= x"00"; --
+ level_coded (11)<= x"00"; --
+ level_coded (12)<= x"00"; --
+ level_coded (14)<= x"00"; --
+ level_coded (15)<= x"00"; --
+
+
+ PressKey_coded (0)<= x"50"; --P
+ PressKey_coded (1)<= x"52"; --R
+ PressKey_coded (2)<= x"45"; --E
+ PressKey_coded (3)<= x"53"; --S
+ PressKey_coded (4)<= x"53"; --S
+ PressKey_coded (5)<= x"00"; --
+ PressKey_coded (6)<= x"00"; --
+ PressKey_coded (7)<= x"41"; --A
+ PressKey_coded (8)<= x"4e"; --N
+ PressKey_coded (9)<= x"59"; --Y
+ PressKey_coded (10)<= x"00"; --
+ PressKey_coded (11)<= x"00"; --
+ PressKey_coded (12)<= x"4b"; --K
+ PressKey_coded (13)<= x"45"; --E
+ PressKey_coded (14)<= x"59"; --Y
+ PressKey_coded (15)<= x"00"; --
+
+ 
+ preview_coded  (0)<= x"50"; --P
+ preview_coded  (1)<= x"52"; --R
+ preview_coded  (2)<= x"45"; --E
+ preview_coded (3)<= x"56"; --V
+ preview_coded (4)<= x"49"; --I
+ preview_coded (5)<= x"45"; --E
+ preview_coded (6)<= x"57"; --W
+ preview_coded (7)<= x"3a"; --:
+ preview_coded (8)<= x"00"; --
+ preview_coded (9)<= x"00"; --
+ preview_coded (10)<= x"00"; --
+ preview_coded (11)<= x"00"; --
+ preview_coded (12)<= x"00"; --
+ preview_coded (13)<= x"00"; --
+ preview_coded (14)<= x"00"; --
+ preview_coded (15)<= x"00"; --
+ 
+  u_font_rom_key : font_rom 
+  port map ( 
+      clk => clk,--25?
+      addr => rom_addrKey,
+      data => rom_dataKey
+   );
+
+ rom_addr_dy_Key <= PressKey_coded(conv_integer(pixel_column(6  downto 3))) when pixel_row(9  downto 4) = "001000" and pixel_column(8 downto 7) = "10"   and (fsm_GameStart ='1' or fsm_GameOver ='1')and clk_1d2hz = '1' else --and count_1hz_reg(23) = '1' 
+                (others=>'0');
+rom_addrkey <=  rom_addr_dy_Key(6 downto 0)  & pixel_row(3 downto 0) ; 
+
+pixel_txt_key  <= rom_dataKey(0) when pixel_column(2 downto 0) = "000" else
+               rom_dataKey(7) when pixel_column(2 downto 0) = "001" else
+               rom_dataKey(6) when pixel_column(2 downto 0) = "010" else
+               rom_dataKey(5) when pixel_column(2 downto 0) = "011" else
+               rom_dataKey(4) when pixel_column(2 downto 0) = "100" else
+               rom_dataKey(3) when pixel_column(2 downto 0) = "101" else
+               rom_dataKey(2) when pixel_column(2 downto 0) = "110" else
+		       rom_dataKey(1) when pixel_column(2 downto 0) = "111" else
+			   '0' ;
+ 
+ 
+ 
+  u_font_rom : font_rom 
+  port map ( 
+      clk => clk,--25?
+      addr => rom_addr,
+      data => rom_data
+   );
+
+ rom_addr_dy <= score_coded(conv_integer(pixel_column(6  downto 3))) when pixel_row(9  downto 4) = "000000" and pixel_column(8 downto 7) = "10"  else
+                level_coded(conv_integer(pixel_column(6  downto 3))) when pixel_row(9  downto 4) = "000001" and pixel_column(8 downto 7) = "10"  else
+                preview_coded(conv_integer(pixel_column(6  downto 3))) when pixel_row(9  downto 4) = "000011" and pixel_column(8 downto 7) = "10"  else
+                (others=>'0');
+
+-- get char that must be displayed on this region
+--ram_addr2 <= pixel_row(9  downto 4) & pixel_column(8  downto 3);
+
+-- decode the ram char to displayed it on the screen
+rom_addr <=  rom_addr_dy(6 downto 0)  & pixel_row(3 downto 0) ; 
+
+-- display the row : data rom data pixel by pixel 
+pixel_txt  <= rom_data(0) when pixel_column(2 downto 0) = "000" else
+               rom_data(7) when pixel_column(2 downto 0) = "001" else
+               rom_data(6) when pixel_column(2 downto 0) = "010" else
+               rom_data(5) when pixel_column(2 downto 0) = "011" else
+               rom_data(4) when pixel_column(2 downto 0) = "100" else
+               rom_data(3) when pixel_column(2 downto 0) = "101" else
+               rom_data(2) when pixel_column(2 downto 0) = "110" else
+		       rom_data(1) when pixel_column(2 downto 0) = "111" else
+			   '0' ;
+
+
+  u_keyPS2controller:  keyPS2controller 
+  port map( 
+	   clk => clk,
+       rst => rstn,
+	   ack => kb_ack,
+       kbdata =>kbdata, -- to the keyboard
+       kbclk =>kbclk,   -- to the keyboard
+	   data_ready =>kb_data_ready,
+	   kbdatarx =>kb_kbdatarx
+  );
+  
+  p_keyReg : process( clk, rstn )
+  begin
+    if( rstn='1' ) then
+          kb_ack <= '0';
+		  obj_move_left  <= '0';
+		  obj_move_right <= '0' ;
+		  obj_rotate     <= '0' ;
+    elsif( clk'event and clk='1' ) then
+	   if count_1hz_reg(10 downto 0) = 0 then
+		  if kb_data_ready = '1' then
+		      -- allow to get next key
+              kb_ack <= '1';
+              
+              obj_move_left  <= '0';
+		      obj_move_right <= '0' ;
+		      obj_rotate     <= '0' ;
+
+               -- key detection signal
+               if kb_kbdatarx = x"15" then -- Q
+                 obj_move_left  <= '1';
+               end if;
+               
+               if kb_kbdatarx = x"1D" then -- W
+                 obj_move_right <= '1' ;
+               end if;
+               
+               if kb_kbdatarx = x"29" then -- space
+                 obj_rotate     <= '1' ;
+               end if;
+		       
+            else
+		      kb_ack <= '0';
+		      obj_move_left  <= '0';
+		      obj_move_right <= '0' ;
+		      obj_rotate     <= '0' ;
+		  
+	      end if;
+	      else
+		      kb_ack <= '0';
+		      obj_move_left  <= '0';
+		      obj_move_right <= '0' ;
+		      obj_rotate     <= '0' ;
+       end if;
+    end if;
+  end process ;
+
+u_vga_sync :  vga_controller 
+  Port map ( clk       => clk_50mhz,
+         reset     => rstn,
+         hs        => horiz_sync_out,
+         vs        => vert_sync_out,
+         pixel_clk => clk_25mhz,
+         blank     => video_on,
+         sync      => csync_out,
+         DrawY     => pixel_row,
+         DrawX     => pixel_column
+         );
+clk_25mhz_out <= clk_25mhz;
+blank_out  <= video_on;
+ 
+-- allow the display of rgb color pixel	
+	
+
+ process( clk_25mhz)
+  begin
+    if( clk_25mhz'event and clk_25mhz='1' ) then
+
+     if (pixel='1' or pixel_txt_key ='1')and  video_on = '1' and valid_screen = '1' then 
+         red_out   <= (others=>'1') ;
+     else 
+         red_out   <= (others=>'0') ;
+     end if;
+     
+     if (pixel='1' or pixel_txt = '1') and  video_on = '1' and valid_screen = '1' then 
+         green_out   <= (others=>'1') ;
+     else 
+         green_out   <= (others=>'0') ;
+     end if;
+
+     if  (pixel='1' or pixel_border = '1') and  video_on = '1' and valid_screen = '1' then 
+         blue_out   <= (others=>'1') ;
+     else 
+         blue_out   <= (others=>'0') ;
+     end if;
+     				 
+	
+     valid_screen <= '1';
+
+  end if;	
+end process ;
+
+	  
+
+-- display the row : data rom data pixel by pixel 
+pixel1  <= matrix_display_reg (conv_integer(pixel_row(8 downto 4))) (conv_integer(pixel_column(7 downto 4)))
+          when pixel_column(9 downto 8) = "00" and pixel_row(9) = '0' else '0';
+
+pixel2  <= object_randum (conv_integer(pixel_row(5 downto 4))) (conv_integer(pixel_column(5 downto 4)))
+          when pixel_column(9 downto 6) = "0100" and pixel_row(9 downto 6) = "0001" and 
+               pixel_row(5 downto 4) /= "11" and pixel_column(5 downto 4) /= "11" 
+          else '0';
+
+pixel <= pixel2 or pixel1;
+
+pixel_border <= '1' when pixel_column = 255 else
+				'1'	when pixel_column = 0 else
+				'1' when pixel_row=0 and pixel_column <255 else
+				'1' when pixel_row=477 and pixel_column <255
+					else '0';
+
+ 
+rstn <= not(rst);
+clk <= clk_50mhz;
+
+
+
+
+---
+---
+---
+  clk_1hz <= '1' when count_1hz_reg = 20000000 else
+             '0';
+  clk_1d2hz <= '1' when count_1hz_reg > 10000000 else
+             '0';
+
+  pgen_1htz : process( clk, rstn )
+  begin
+    if( rstn='1' ) then
+      count_1hz_reg <= (others=>'0');
+    elsif( clk'event and clk='1' ) then
+	   if count_1hz_reg = 20000000 then --00
+		  count_1hz_reg <=(others=>'0'); --1 01111 1010111100 0010000000
+		  count_1hz_reg(17 downto 10) <= unsigned(binary_level(7 downto 0));
+      else
+		  count_1hz_reg <=count_1hz_reg + 1;
+	  end if;
+    end if;
+  end process ;
+
+   
+   
+
+   process( matrix_reg )
+  begin
+        loadRemoveMod <= (others=>'0');
+		for i in 29 downto 0 loop
+	     if matrix_reg (i) = "1111111111111111" then
+		    loadRemoveMod (i) <= '1';
+		  else 
+		    loadRemoveMod (i) <= '0';
+		  end if;
+      end loop;
+
+  end process ;
+ 
+   process( loadRemoveMod)
+  begin
+      loadRemove <= (others=>'0');
+		for i in 29 downto 0 loop
+		  if loadRemoveMod (i) = '1' then 
+	       loadRemove (i downto 0 ) <= (others=>'1');
+		  end if;
+      end loop;
+  end process ;
+fsm_NeedRemoveLine <= loadRemove(0);
+    cloked_position_y : process( clk, rstn )
+  begin
+    if( rstn='1' ) then
+      position_y_reg <=(others=>'0');
+		position_y_reg(2)<='1';
+    elsif( clk'event and clk='1' ) then
+	   if fsm_NewObject ='1' then
+		  position_y_reg <=(others=>'0');
+		  position_y_reg(2)<='1';
+	   elsif obj_move_left = '1' and collisionL_reg = '0'then
+		  position_y_reg <=position_y_reg - 1; 
+      elsif obj_move_right = '1' and collisionR_reg = '0' then
+		  position_y_reg <=position_y_reg + 1; 
+		end if;
+    end if;
+  end process ;
+
+cloked_position_x : process( clk, rstn )
+  begin
+    if( rstn='1' ) then
+      position_x_reg <=(others=>'0');
+    elsif( clk'event and clk='1' ) then
+	   if fsm_NewObject ='1' then
+	     position_x_reg <=(others=>'0');
+	   elsif clk_1hz = '1' and fsm_GameStart ='0' then
+		  position_x_reg <=position_x_reg + 1; 
+		end if;
+    end if;
+  end process ;
+
+  
+  
+  
+  
+  cloked_line : process( clk, rstn )
+  begin
+    if( rstn='1' ) then
+      line_reg <=position_x_reg;
+    elsif( clk'event and clk='1' ) then
+	   if line_reg = position_x_reg+2 then
+		  line_reg <=position_x_reg; 
+      elsif fsm_AddObject_Run = '1' then
+		  line_reg <=line_reg + 1;
+		elsif fsm_AddObject_Run = '0' then
+		  line_reg <=position_x_reg; 
+		end if;
+    end if;
+  end process ;
+  fsm_AddObject_Ack <= '1' when  line_reg = position_x_reg+2 and coln_reg = position_y_reg + 2 else
+                      '0';
+  run_coln <= '1' when line_reg = position_x_reg+2 else
+              '0';
+
+			
+  cloked_coln : process( clk, rstn )
+  begin
+    if( rstn='1' ) then
+      coln_reg <=position_y_reg;
+    elsif( clk'event and clk='1' ) then
+	   if line_reg = position_x_reg+2 and coln_reg = position_y_reg + 2 then
+		  coln_reg <=position_y_reg; 
+      elsif run_coln = '1' then
+		  coln_reg <=coln_reg + 1;
+		elsif fsm_AddObject_Run = '0' then
+		  coln_reg <=position_y_reg; 		  
+		end if;
+    end if;
+  end process ;
+
+--adding the object line by line
+ --using his postion to the matrix monitor
+  add_objectTomatrix : process( fsm_GameOver,fsm_GameStart,fsm_AddMAtrix,fsm_StepAddObject, matrix_reg, coln_reg,line_reg,position_y_reg,position_x_reg,object_reg)
+  begin
+   matrix_display_next <= matrix_display_reg;
+   if  fsm_AddMAtrix =  '1' then
+	  matrix_display_next <= matrix_reg; 
+	elsif fsm_StepAddObject = '1' then
+	  matrix_display_next (conv_integer(line_reg))(conv_integer(coln_reg)) <= 
+	         matrix_reg (conv_integer(line_reg)) (conv_integer(coln_reg))or 
+	         object_reg(conv_integer(line_reg)-conv_integer(position_x_reg))(conv_integer(coln_reg)-conv_integer(position_y_reg));
+   elsif fsm_GameStart = '1' then
+	  matrix_display_next <= matrix_START;
+	elsif fsm_GameOver = '1' then
+	  matrix_display_next <=matrix_GAME_OVER;
+	end if;
+  end process ;
+  
+ process( fsm_CleanMatrix,fsm_matrix_add,fsm_removeLine,matrix_reg,loadRemove,matrix_display_reg )
+  begin
+  
+  matrix_next <= matrix_reg;
+  if fsm_CleanMatrix = '1' then 
+     for i in 0 to 31 loop
+	      matrix_next (i)<=(others=>'0');
+      end loop;
+	  matrix_next (30)<= "1111111111111111";
+  elsif fsm_matrix_add = '1' then
+    matrix_next <= matrix_display_reg ;
+  elsif fsm_removeLine = '1' then
+    for i in 1 to 29 loop
+	   if loadRemove (i) = '1' then
+		  matrix_next (i) <= matrix_reg (i-1);
+      end if;
+    end loop;
+	end if;
+  end process ;
+ 
+ 
+
+ process(fsm_CleanLR,collisionL_reg,collisionR_reg, collision_reg,fsm_AddMAtrix,fsm_StepAddObject, matrix_reg, coln_reg,line_reg,position_y_reg,position_x_reg,object_reg)
+  begin
+     
+	 collision_next <= collision_reg;
+	 
+	 if fsm_StepAddObject = '1' then 
+--	   if (object_randum(2) = "000" and line_reg = 30 )or (object_randum(2) /= "000" and line_reg = 29) then 
+--	     collision_next <= '1';
+--	   else
+        collision_next <= ( matrix_reg (conv_integer(line_reg)+1)(conv_integer(coln_reg)) and  
+                           object_reg(conv_integer(line_reg)-conv_integer(position_x_reg))
+		                            (conv_integer(coln_reg)-conv_integer(position_y_reg)) ) or
+                           collision_reg ;
+       
+--		end if;					  
+	 elsif fsm_DetectCollusion_ack = '1' then 
+	   collision_next <= '0';
+    end if;
+	 
+	 collisionR_next <= collisionR_reg;
+	 if fsm_StepAddObject = '1' then 
+--	   if coln_reg = 15 then  
+--	     collisionR_next <= '1';
+--	   else 
+	     collisionR_next <= ( matrix_reg (conv_integer(line_reg))(conv_integer(coln_reg)+1) and  
+                           object_reg(conv_integer(line_reg)-conv_integer(position_x_reg))
+		                               (conv_integer(coln_reg)-conv_integer(position_y_reg)) ) or
+                           collisionR_reg ;
+--		end if;					  
+	 elsif fsm_CleanLR  = '1' then 
+	   collisionR_next <= '0';
+    end if;
+
+	 collisionL_next <= collisionL_reg;
+	 if fsm_StepAddObject = '1' then 
+--	   if coln_reg = 0 then  
+--	     collisionL_next <= '1';
+--	   else 
+	     collisionL_next <= ( matrix_reg (conv_integer(line_reg))(conv_integer(coln_reg)-1) and  
+                           object_reg(conv_integer(line_reg)-conv_integer(position_x_reg))
+		                               (conv_integer(coln_reg)-conv_integer(position_y_reg)) ) or
+                           collisionL_reg ;
+--		end if;					  
+	 elsif fsm_CleanLR  = '1' then 
+	   collisionL_next <= '0';
+    end if;
+	 
+  end process ;
+  	 
+  fsm_DetectCollusion <= collision_reg; 
+
+  cloked_process : process( clk, rstn )
+  begin
+    if( rstn='1' ) then
+	kb_data_ready_reg<= '0';
+	  go_reg <= '0';
+	   state_reg <=  StartGameDebut ;
+      object_reg <= object_randum;
+		collision_reg<='0';
+		collisionR_reg<='0';
+		collisionL_reg<='0';
+		for i in 0 to 31 loop
+	     matrix_reg (i)<=(others=>'0');
+		  matrix_display_reg (i)<=(others=>'0');
+      end loop;
+		--matrix_reg (27)<= "1111111111111101";
+		--matrix_reg (26)<= "1111111111111011";
+
+		--matrix_reg (29)<= "1111111111111100";
+		--matrix_reg (28)<= "1111111111111100";
+		matrix_reg (30)<= "1111111111111111";
+	
+    elsif( clk'event and clk='1' ) then
+        kb_data_ready_reg <= kb_data_ready_next;
+        go_reg <= go_next;
+	    state_reg<= state_next ;
+        object_reg <=object_next;
+		matrix_reg <=matrix_next;
+		matrix_display_reg <= matrix_display_next;
+		collision_reg<=collision_next;
+		collisionR_reg<=collisionR_next;
+		collisionL_reg<=collisionL_next;
+    end if;
+  end process ;
+
+  object_next <=  object_randum when fsm_NewObject = '1' else
+                  object_rotated when obj_rotate = '1' else
+                  object_reg;
+
+  object_rotated(0) <= object_reg(0)(0) & object_reg(1)(0) & object_reg(2)(0);
+  object_rotated(1) <= object_reg(0)(1) & object_reg(1)(1) & object_reg(2)(1);
+  object_rotated(2) <= object_reg(0)(2) & object_reg(1)(2) & object_reg(2)(2);
+
+  combinatory_randum : process( randum_sel)
+  begin 
+      case randum_sel is 
+	    when "000" =>
+		    object_randum(0) <= "100";
+			object_randum(1) <= "100";
+			object_randum(2) <= "110";
+	    when "001" =>		
+		    object_randum(0) <= "100";
+			object_randum(1) <= "100";
+			object_randum(2) <= "100";
+	    when "010" =>
+		    object_randum(0) <= "000";
+			object_randum(1) <= "110";
+			object_randum(2) <= "110";
+	    when "011" =>
+		    object_randum(0) <= "010";
+			object_randum(1) <= "010";
+			object_randum(2) <= "110";
+	    when "100" =>
+		    object_randum(0) <= "100";
+			object_randum(1) <= "110";
+			object_randum(2) <= "010";
+	    when "101" =>
+		    object_randum(0) <= "010";
+			object_randum(1) <= "110";
+			object_randum(2) <= "100";
+	    when "110" =>
+		    object_randum(0) <= "010";
+			object_randum(1) <= "010";
+			object_randum(2) <= "110";
+	    when "111" =>
+		    object_randum(0) <= "010";
+			object_randum(1) <= "110";
+			object_randum(2) <= "010";
+       when others =>
+		    object_randum(0) <= "100";
+			object_randum(1) <= "110";
+			object_randum(2) <= "100";
+     end case;
+	end process;
+	
+	kb_data_ready_next <= kb_data_ready;
+	process(clk)
+	begin
+	  if clk'EVENT and clk='1' then
+	   if kb_data_ready_next = '1' and kb_data_ready_reg = '0' then
+	   	randum_sel_next <= STD_LOGIC_VECTOR(count_1hz_reg(2 downto 0))+1+randum_sel_next;
+	   elsif fsm_CleanLR ='1' then
+	    randum_sel_next <= STD_LOGIC_VECTOR(count_1hz_reg(2 downto 0))+1+randum_sel_next;
+	   end if;
+	   if fsm_NewObject = '1' then 
+	    randum_sel <= randum_sel_next;
+	   end if;
+	  end if;
+	end process;
+
+
+  --next state processing
+  combinatory_FSM_next : process(position_x_reg,obj_move_left,obj_move_right,state_reg,fsm_AddObject_Ack,fsm_DetectCollusion,clk_1hz,fsm_NeedRemoveLine)
+  begin
+    state_next        <= state_reg;
+	 fsm_AddMAtrix     <= '0';
+ 	 fsm_AddObject_Run <= '0';
+	 fsm_StepAddObject <= '0';
+     fsm_StepAddObject <= '0';
+	 fsm_matrix_add <= '0';
+	 fsm_DetectCollusion_ack <= '0';
+	 fsm_NewObject <= '0';
+	 fsm_removeLine<= '0';
+	 fsm_CleanLR <= '0';
+	 
+	 fsm_inc_score <= '0';
+	 fsm_score_clean <= '0';
+	 
+	 fsm_GameOver <= '0';
+	 fsm_GameStart <= '0';
+	 fsm_CleanMatrix <= '0';
+     
+    case state_reg is
+  
+    when StartGameDebut =>
+		fsm_GameStart <= '1';
+		if kb_data_ready = '1' then
+		  state_next <= idleClear;  
+		end if;
+    when idleClear =>
+        state_next <= idle;  
+        
+        fsm_CleanMatrix <= '1';
+
+
+    when idle =>
+        state_next <= AddMatrix;  
+        
+        fsm_CleanLR <= '1';
+       
+ 	when AddMatrix =>
+        fsm_AddMAtrix <= '1';
+        state_next <= BeginAddObject;  
+     
+ 	when BeginAddObject =>
+        fsm_AddObject_Run <= '1';
+		  fsm_StepAddObject <= '1';
+        state_next <= EndAddObject;  
+		    
+ 	when EndAddObject =>
+	   fsm_AddObject_Run <= '1';
+	   fsm_StepAddObject <= '1';
+      if fsm_AddObject_Ack = '1' then
+        state_next <= DetectCollusion;  
+      end if;
+ 	when DetectCollusion =>
+ 	
+ 	  if fsm_DetectCollusion = '1' and position_x_reg = 0 then
+         state_next <= GameOverFin;  
+         fsm_DetectCollusion_ack <= '1';
+      elsif fsm_DetectCollusion = '1' then
+		  fsm_DetectCollusion_ack <= '1';
+        state_next <= CollusionDetected;  
+		else
+		  state_next <= WaitNextFrame;  
+      end if;
+
+	when GameOverFin =>
+		fsm_GameOver <= '1';
+		fsm_DetectCollusion_ack <= '1';
+		if kb_data_ready = '1' then
+		  fsm_score_clean <= '1';
+		  state_next <= StartGameDebut;  
+		end if;
+
+	when CollusionDetected =>
+		fsm_matrix_add <= '1';
+		fsm_DetectCollusion_ack <= '1';
+		state_next <= DectectRemoveFullLine;  
+		
+
+   when WaitNextFrame =>
+	   fsm_DetectCollusion_ack <= '1';
+	   if clk_1hz = '1' or obj_move_left = '1' or obj_move_right = '1' then
+        state_next <= idle;  
+      end if;
+   when DectectRemoveFullLine =>
+	   state_next <= WaitNextFrameNew;  
+		if fsm_NeedRemoveLine = '1' then
+		  state_next <= RemoveFullLine;  
+		end if;
+
+
+   when RemoveFullLine =>
+	  fsm_removeLine<= '1';
+	  fsm_inc_score <= '1';
+		state_next <= WaitNextFrameNew;  
+		if fsm_NeedRemoveLine = '1' then
+		  state_next <= RemoveFullLine;  
+		end if;
+
+	
+   when WaitNextFrameNew =>
+	   fsm_DetectCollusion_ack <= '1';
+	   if clk_1hz = '1' then
+		  fsm_NewObject <= '1';
+          state_next <= idle;  
+      end if;
+	
+    when others =>
+    end case;
+  end process;
+
+  -- count the score of the game
+  process( clk, rstn )
+  begin
+    if( rstn='1' ) then
+      count_score_reg <= (others=>'0');
+    elsif( clk'event and clk='1' ) then
+	   if fsm_score_clean = '1' then 
+		  count_score_reg <=(others=>'0');
+      elsif fsm_inc_score = '1' then
+		  count_score_reg <=count_score_reg + 1;
+	  end if;
+    end if;
+  end process ;
+  
+
+matrix_GAME_OVER(0)<=  "0000000000000000";
+matrix_GAME_OVER(1)<=  "0000000000000000";
+matrix_GAME_OVER(2)<=  "0001110001111100"; 
+matrix_GAME_OVER(3)<=  "0010001000000100";
+matrix_GAME_OVER(4)<=  "0010001001110100";
+matrix_GAME_OVER(5)<=  "0010001001000100";
+matrix_GAME_OVER(6)<=  "0001110001111100";
+matrix_GAME_OVER(7)<=  "0000000000000000";
+
+matrix_GAME_OVER(8)<=  "0010001000010000";
+matrix_GAME_OVER(9)<=  "0010001000101000";
+matrix_GAME_OVER(10)<= "0010001001000100";
+matrix_GAME_OVER(11)<= "0010001001111100";
+matrix_GAME_OVER(12)<= "0001010001000100";
+matrix_GAME_OVER(13)<= "0000100001000100";
+matrix_GAME_OVER(14)<= "0000000000000000";
+matrix_GAME_OVER(15)<= "0000000000000000";
+
+matrix_GAME_OVER(16)<= "0011111001101100";
+matrix_GAME_OVER(17)<= "0000001001010100";
+matrix_GAME_OVER(18)<= "0000111001010100";
+matrix_GAME_OVER(19)<= "0000001001000100";
+matrix_GAME_OVER(20)<= "0011111001000100";
+matrix_GAME_OVER(21)<= "0000000000000000";
+matrix_GAME_OVER(22)<= "0000000000000000";
+
+matrix_GAME_OVER(23)<= "0001110001111100";
+matrix_GAME_OVER(24)<= "0010001000000100";
+matrix_GAME_OVER(25)<= "0001111001111100";
+matrix_GAME_OVER(26)<= "0001001000000100";
+matrix_GAME_OVER(27)<= "0010001001111100";
+matrix_GAME_OVER(28)<=  "0000000000000000";
+matrix_GAME_OVER(29)<=  "0000000000000000";
+
+matrix_GAME_OVER(30)<=  "0000000000000000";
+matrix_GAME_OVER(31)<=  "0000000000000000";
+
+
+
+matrix_START(0)<=  "0111111100111110";
+matrix_START(1)<=  "0000100000000110";
+matrix_START(2)<=  "0000100000000110";
+matrix_START(3)<=  "0000100000111110";
+matrix_START(4)<=  "0000100000110000";
+matrix_START(5)<=  "0000100000110000";
+matrix_START(6)<=  "0000100000111110";
+matrix_START(7)<=  "0000000000000000";
+
+matrix_START(8)<=  "0111111000011100";
+matrix_START(9)<=  "0100001000110110";
+matrix_START(10)<= "0111111001100011";
+matrix_START(11)<= "0000111001111111";
+matrix_START(12)<= "0011011001100011";
+matrix_START(13)<= "0110011001100011";
+matrix_START(14)<= "1100011001100011";
+matrix_START(15)<= "0000000000000000";
+
+matrix_START(16)<= "0000011111110000";
+matrix_START(17)<= "0000000010000000";
+matrix_START(18)<= "0000000010000000";
+matrix_START(19)<= "0000000010000000";
+matrix_START(20)<= "0000000010000000";
+matrix_START(21)<= "0000000010000000";
+matrix_START(22)<= "0000000000000000";
+
+matrix_START(23)<= "0111101111011110";
+matrix_START(24)<= "0000100001000010";
+matrix_START(25)<= "0111100001011110";
+matrix_START(26)<= "0000100001000010";
+matrix_START(27)<= "0111101111011110";
+matrix_START(28)<= "0000000000000000";
+matrix_START(29)<= "0000000000000000";
+matrix_START(30)<= "0000000000000000";
+
+
+end RTL;

@@ -1,0 +1,56 @@
+--------------------------------------------------------------------------------------
+Timing Analyzer Summary
+--------------------------------------------------------------------------------------
+
+Type           : Worst-case tsu
+Slack          : N/A
+Required Time  : None
+Actual Time    : 21.678 ns
+From           : rst
+To             : matrix_display_reg[12][13]
+From Clock     : --
+To Clock       : clk_50mhz
+Failed Paths   : 0
+
+Type           : Worst-case tco
+Slack          : N/A
+Required Time  : None
+Actual Time    : 43.917 ns
+From           : vga_controller:u_vga_sync|vc[5]
+To             : green_out[0]
+From Clock     : clk_50mhz
+To Clock       : --
+Failed Paths   : 0
+
+Type           : Worst-case th
+Slack          : N/A
+Required Time  : None
+Actual Time    : -4.731 ns
+From           : kbclk
+To             : keyPS2controller:u_keyPS2controller|filter_reg[7]
+From Clock     : --
+To Clock       : clk_50mhz
+Failed Paths   : 0
+
+Type           : Clock Setup: 'clk_50mhz'
+Slack          : N/A
+Required Time  : None
+Actual Time    : 63.06 MHz ( period = 15.859 ns )
+From           : position_x_reg[1]
+To             : matrix_display_reg[12][13]
+From Clock     : clk_50mhz
+To Clock       : clk_50mhz
+Failed Paths   : 0
+
+Type           : Total number of failed paths
+Slack          : 
+Required Time  : 
+Actual Time    : 
+From           : 
+To             : 
+From Clock     : 
+To Clock       : 
+Failed Paths   : 0
+
+--------------------------------------------------------------------------------------
+
